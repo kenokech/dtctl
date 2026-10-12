@@ -3499,7 +3499,6 @@ func actionFixtures() []appengine.AppAction {
 	return []appengine.AppAction{
 		{
 			AppID:       "example.app",
-			AppName:     "Example App",
 			ActionName:  "send-thing",
 			Title:       "Send thing",
 			Description: "Sends a thing",
@@ -3508,7 +3507,6 @@ func actionFixtures() []appengine.AppAction {
 		},
 		{
 			AppID:       "example.app",
-			AppName:     "Example App",
 			ActionName:  "list-things",
 			Title:       "List things",
 			Description: "Lists the things",
@@ -3516,7 +3514,6 @@ func actionFixtures() []appengine.AppAction {
 		},
 		{
 			AppID:       "example.connector",
-			AppName:     "Example Connector",
 			ActionName:  "create-thing",
 			Title:       "Create thing",
 			Description: "Creates a thing",
@@ -3526,22 +3523,21 @@ func actionFixtures() []appengine.AppAction {
 }
 
 // actionWithExtraFixture is a single action as `get action <app>/<name>`
-// returns it: every key the typed fields do not model lands in Extra, nested
-// and scalar both, hidden from tables and present in the structured formats.
+// returns it: every manifest attribute the typed fields do not model lands in
+// Extra, nested and scalar both. Hidden from tables, and emitted inline under
+// its own name in the structured formats.
 func actionWithExtraFixture() appengine.AppAction {
 	return appengine.AppAction{
 		AppID:       "example.connector",
-		AppName:     "Example Connector",
 		ActionName:  "create-thing",
 		Title:       "Create thing",
 		Description: "Creates a thing",
 		FullName:    "example.connector/create-thing",
-		Extra: map[string]interface{}{
-			"approval": true,
-			"widget":   "/actions/create-thing",
-			"expressionValidation": map[string]interface{}{
-				"owner": map[string]interface{}{"pattern": "^[A-Za-z0-9-]+$"},
-			},
+		Extra: map[string]json.RawMessage{
+			"approval":             json.RawMessage(`true`),
+			"widget":               json.RawMessage(`"/actions/create-thing"`),
+			"expressionValidation": json.RawMessage(`{"owner":{"pattern":"^[A-Za-z0-9-]+$"}}`),
+			"docs":                 json.RawMessage(`{"inputSchema":{"type":"object","required":["owner"]}}`),
 		},
 	}
 }

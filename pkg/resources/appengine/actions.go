@@ -2,45 +2,64 @@ package appengine
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
+	"github.com/dynatrace-oss/dtctl/pkg/util/unknownfields"
 	sdkae "github.com/dynatrace-oss/dtctl/sdk/api/appengine"
 )
 
-// AppAction represents an action declared by an app (CLI version with table
-// tags).
 type AppAction struct {
-	AppID       string `json:"appId" table:"APP_ID,wide"`
-	AppName     string `json:"appName" table:"APP"`
-	ActionName  string `json:"actionName" table:"ACTION"`
-	Title       string `json:"title,omitempty" table:"TITLE"`
-	Description string `json:"description,omitempty" table:"DESCRIPTION,wide"`
-	Stateful    bool   `json:"stateful,omitempty" table:"STATEFUL,wide"`
-	FullName    string `json:"fullName" table:"FULL_NAME"`
+	AppID       string `json:"appId" yaml:"appId" table:"APP_ID"`
+	ActionName  string `json:"actionName" yaml:"actionName" table:"ACTION"`
+	Title       string `json:"title,omitempty" yaml:"title,omitempty" table:"TITLE"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty" table:"DESCRIPTION,wide"`
+	Stateful    bool   `json:"stateful,omitempty" yaml:"stateful,omitempty" table:"STATEFUL,wide"`
+	FullName    string `json:"fullName" yaml:"fullName" table:"FULL_NAME"`
 
-	// Extra holds the manifest keys with no typed field above. Hidden from
-	// every table -- it is nested and arbitrarily wide -- and rendered by
-	// `describe action`.
-	Extra map[string]interface{} `json:"extra,omitempty" table:"-"`
+	// Extra holds the manifest attributes with no typed field; MarshalJSON
+	// emits them inline.
+	Extra map[string]json.RawMessage `json:"-" yaml:"-" table:"-"`
 }
 
-// fromSDKAppAction converts an SDK AppAction to a CLI AppAction.
-func fromSDKAppAction(s *sdkae.AppAction) AppAction {
+// MarshalJSON emits the modelled fields, then each Extra attribute under its
+// own name. A manifest attribute that collides with a modelled field is
+// dropped: the typed field wins.
+func (a AppAction) MarshalJSON() ([]byte, error) {
+	type plain AppAction
+	return unknownfields.Marshal(plain(a), a.Extra)
+}
+
+func (a AppAction) MarshalYAML() (any, error) {
+	type plain AppAction
+	return unknownfields.YAML(plain(a), a.Extra)
+}
+
+func fromSDKAppAction(s *sdkae.AppAction) (AppAction, error) {
+	var extra map[string]json.RawMessage
+	for key, value := range s.Extra {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return AppAction{}, fmt.Errorf("encode action attribute %q: %w", key, err)
+		}
+		if extra == nil {
+			extra = make(map[string]json.RawMessage, len(s.Extra))
+		}
+		extra[key] = raw
+	}
 	return AppAction{
 		AppID:       s.AppID,
-		AppName:     s.AppName,
 		ActionName:  s.ActionName,
 		Title:       s.Title,
 		Description: s.Description,
 		Stateful:    s.Stateful,
 		FullName:    s.FullName,
-		Extra:       s.Extra,
-	}
+		Extra:       extra,
+	}, nil
 }
 
-// ListActionsOptions narrows what ListActions returns.
 type ListActionsOptions = sdkae.ListActionsOptions
 
-// ListActions lists all actions across apps, narrowed by opts
 func (h *Handler) ListActions(opts ListActionsOptions) ([]AppAction, error) {
 	sdkResult, err := h.sdk.ListActions(context.Background(), opts)
 	if err != nil {
@@ -48,17 +67,21 @@ func (h *Handler) ListActions(opts ListActionsOptions) ([]AppAction, error) {
 	}
 	actions := make([]AppAction, len(sdkResult))
 	for i := range sdkResult {
-		actions[i] = fromSDKAppAction(&sdkResult[i])
+		if actions[i], err = fromSDKAppAction(&sdkResult[i]); err != nil {
+			return nil, err
+		}
 	}
 	return actions, nil
 }
 
-// GetAction gets details about a specific action
 func (h *Handler) GetAction(fullName string) (*AppAction, error) {
 	sdkResult, err := h.sdk.GetAction(context.Background(), fullName)
 	if err != nil {
 		return nil, err
 	}
-	a := fromSDKAppAction(sdkResult)
+	a, err := fromSDKAppAction(sdkResult)
+	if err != nil {
+		return nil, err
+	}
 	return &a, nil
 }

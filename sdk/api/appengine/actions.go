@@ -10,43 +10,23 @@ import (
 	"github.com/dynatrace-oss/dtctl/sdk/httpclient"
 )
 
-// AppAction is one action of an installed app.
-//
-// The shape is the one the planned flat /actions collection will serve, not
-// the one today's sources happen to have, so swapping a source changes no
-// output:
-//
-//   - List reads GET /apps:search-actions and flattens it. It will read
-//     GET /actions, which returns the same records already flat.
-//   - Get reads the app's manifest and picks one entry out. It will read
-//     GET /actions/{appId}/{actionName}.
-//
-// Extra follows that same split -- see its comment.
+// AppAction is one action of an installed app, as the App Registry's
+// /actions API serves it.
 type AppAction struct {
 	AppID       string `json:"appId"`
-	AppName     string `json:"appName"`
 	ActionName  string `json:"actionName"`
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
 	Stateful    bool   `json:"stateful,omitempty"`
 	FullName    string `json:"fullName"`
 
-	// Extra holds the keys the fields above do not model -- widget, icon,
-	// expressionValidation, approval, and whatever the platform adds next --
-	// so a key dtctl has never heard of still reaches the caller. The
-	// modelled keys are filtered out, so nothing appears twice.
-	//
-	// Populated by Get only, never by List. The flat /actions collection
-	// serves a fixed field set widened by `add-fields`, an allowlist that
-	// deliberately excludes the large fields, so a list can never carry
-	// arbitrary keys; only /actions/{appId}/{actionName} returns them all.
-	// Today's GET /apps:search-actions does happen to return every key, but
-	// populating Extra from it would ship a field that vanishes the day the
-	// source is swapped.
+	// Extra holds the action's manifest attributes with no field above, such
+	// as docs. Populated by GetAction only: GET /actions serves a fixed field
+	// set, so ListActions never has them.
 	Extra map[string]interface{} `json:"extra,omitempty"`
 }
 
-// modelledActionKeys are the manifest keys AppAction gives a typed field.
+// modelledActionKeys are the action keys AppAction gives a typed field.
 // They are excluded from Extra; adding a field above means adding its key
 // here, or it will be reported in both places.
 var modelledActionKeys = map[string]bool{
@@ -56,19 +36,30 @@ var modelledActionKeys = map[string]bool{
 	"stateful":    true,
 }
 
-// searchActionsResponse is the wire shape of GET /apps:search-actions: actions
-// grouped under the app that declares them. The flat /actions collection will
-// replace it, which is why nothing outside this file sees the grouping.
-type searchActionsResponse struct {
-	Apps []struct {
-		ID      string                   `json:"id"`
-		Name    string                   `json:"name"`
-		Actions []map[string]interface{} `json:"actions"`
-	} `json:"apps"`
+// actionRecord is the wire shape of one action in GET /actions and of the
+// body of GET /actions/{appId}/{actionName}: the declaring app by id, and the
+// action as the app's manifest declares it.
+type actionRecord struct {
+	App struct {
+		ID string `json:"id"`
+	} `json:"app"`
+	Action map[string]interface{} `json:"action"`
 }
+
+type actionListResponse struct {
+	Actions []actionRecord `json:"actions"`
+}
+
+// listActionFields widens GET /actions beyond its default fields (app.id,
+// action.name, action.title, action.description) with the other field
+// AppAction models. The prefix is required: a bare "stateful" is a 400.
+const listActionFields = "action.stateful"
 
 // MaxActionQueryLength is the longest search string the endpoint accepts.
 const MaxActionQueryLength = 256
+
+// MaxActionFilterLength is the longest filter expression the endpoint accepts.
+const MaxActionFilterLength = 256
 
 // ListActionsOptions narrows what ListActions returns.
 type ListActionsOptions struct {
@@ -76,28 +67,38 @@ type ListActionsOptions struct {
 	AppID string
 
 	// Query is a whitespace-separated list of search terms. Each term must
-	// appear in the app name, app description, action name, title or
-	// description; terms are case-insensitive and each one narrows further.
+	// appear in the app id, app name, action name, title or description;
+	// terms are case-insensitive and each one narrows further.
 	Query string
+
+	// Filter is a platform filter expression on app.id and the action's
+	// fields, nested paths included, e.g.
+	// "not (action.docs.inputSchema is-empty)". It is sent as is; combined
+	// with Query, an action must match both.
+	Filter string
 }
 
 // ListActions lists the actions of installed apps.
 //
-// Query is sent upstream; AppID is applied here, because the endpoint's only
-// filter is the full-text Query -- an app id passed to it would also match
-// every action whose description merely mentions the app.
+// Query and Filter are sent upstream; AppID is applied here, so it needs no
+// filter-expression quoting and cannot collide with a caller's Filter.
 func (h *Handler) ListActions(ctx context.Context, opts ListActionsOptions) ([]AppAction, error) {
 	if len(opts.Query) > MaxActionQueryLength {
 		return nil, fmt.Errorf("search is %d characters, the maximum is %d", len(opts.Query), MaxActionQueryLength)
 	}
-
-	req := h.client.HTTP().R().SetContext(ctx)
-	if opts.Query != "" {
-		req.SetQueryParam("query", opts.Query)
+	if len(opts.Filter) > MaxActionFilterLength {
+		return nil, fmt.Errorf("filter is %d characters, the maximum is %d", len(opts.Filter), MaxActionFilterLength)
 	}
 
-	resp, err := req.Get("/platform/app-engine/registry/v1/apps:search-actions")
+	req := h.client.HTTP().R().SetContext(ctx).SetQueryParam("add-fields", listActionFields)
+	if opts.Query != "" {
+		req.SetQueryParam("search", opts.Query)
+	}
+	if opts.Filter != "" {
+		req.SetQueryParam("filter", opts.Filter)
+	}
 
+	resp, err := req.Get("/platform/app-engine/registry/v1/actions")
 	if err != nil {
 		return nil, fmt.Errorf("list actions: %w", err)
 	}
@@ -105,28 +106,24 @@ func (h *Handler) ListActions(ctx context.Context, opts ListActionsOptions) ([]A
 		return nil, fmt.Errorf("list actions: %w", err)
 	}
 
-	var result searchActionsResponse
+	var result actionListResponse
 	if err := json.Unmarshal(resp.Body(), &result); err != nil {
 		return nil, fmt.Errorf("parse actions response: %w", err)
 	}
 
 	var actions []AppAction
-	for _, app := range result.Apps {
-		if opts.AppID != "" && app.ID != opts.AppID {
+	for _, record := range result.Actions {
+		if opts.AppID != "" && record.App.ID != opts.AppID {
 			continue
 		}
-		for _, entry := range app.Actions {
-			// withoutExtra: a list never carries unmodelled keys, whatever
-			// this source returned. See AppAction.Extra.
-			if action, ok := newAppAction(app.ID, app.Name, entry, withoutExtra); ok {
-				actions = append(actions, action)
-			}
+		if action, ok := newAppAction(record.App.ID, record.Action, withoutExtra); ok {
+			actions = append(actions, action)
 		}
 	}
 
-	// Sorted so the order does not change when the source does -- the
-	// endpoint groups by app, a manifest walk follows install order, and
-	// /actions will do neither.
+	// The endpoint sorts by action name, then app id. Sort by full name
+	// instead, so an app's actions stay together, as `get functions` lists
+	// an app's functions.
 	slices.SortFunc(actions, func(a, b AppAction) int {
 		return strings.Compare(a.FullName, b.FullName)
 	})
@@ -143,45 +140,26 @@ func (h *Handler) GetAction(ctx context.Context, fullName string) (*AppAction, e
 		return nil, fmt.Errorf("invalid action name format, expected 'app-id/action-name', got %q", fullName)
 	}
 
-	app, err := h.GetApp(ctx, appID)
+	resp, err := h.client.HTTP().R().SetContext(ctx).
+		Get(fmt.Sprintf("/platform/app-engine/registry/v1/actions/%s/%s",
+			httpclient.PathSegment(appID), httpclient.PathSegment(actionName)))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get action: %w", err)
+	}
+	if err := httpclient.CheckResponse(resp); err != nil {
+		return nil, fmt.Errorf("get action %q: %w", fullName, err)
 	}
 
-	for _, action := range extractActionsFromManifest(app) {
-		if action.ActionName == actionName {
-			return &action, nil
-		}
+	var record actionRecord
+	if err := json.Unmarshal(resp.Body(), &record); err != nil {
+		return nil, fmt.Errorf("parse action response: %w", err)
 	}
 
-	return nil, fmt.Errorf("action %q not found in app %q", actionName, appID)
-}
-
-// extractActionsFromManifest reads the manifest's "actions" array. An entry
-// with no name cannot be addressed as app-id/action-name, so it is skipped
-// rather than emitted under an empty name.
-func extractActionsFromManifest(app *App) []AppAction {
-	if app.Manifest == nil {
-		return nil
-	}
-
-	actionsArray, ok := app.Manifest["actions"].([]interface{})
+	action, ok := newAppAction(record.App.ID, record.Action, withExtra)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("action %q: response carries no action name", fullName)
 	}
-
-	var actions []AppAction
-	for _, entry := range actionsArray {
-		actionMap, ok := entry.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if action, ok := newAppAction(app.ID, app.Name, actionMap, withExtra); ok {
-			actions = append(actions, action)
-		}
-	}
-
-	return actions
+	return &action, nil
 }
 
 // extraMode says whether an action keeps the keys AppAction does not model.
@@ -192,12 +170,9 @@ const (
 	withoutExtra extraMode = false
 )
 
-// newAppAction builds one action from a source record, whether that came from
-// a manifest entry or from an endpoint -- both are the same object. It reports
-// false for a record with no name: such an action cannot be addressed as
-// app-id/action-name, so emitting it would produce a row no other command
-// accepts.
-func newAppAction(appID, appName string, entry map[string]interface{}, mode extraMode) (AppAction, bool) {
+// newAppAction builds an action from a response's "action" object. It reports
+// false for one without a name, which no command could address.
+func newAppAction(appID string, entry map[string]interface{}, mode extraMode) (AppAction, bool) {
 	name, _ := entry["name"].(string)
 	if name == "" {
 		return AppAction{}, false
@@ -221,7 +196,6 @@ func newAppAction(appID, appName string, entry map[string]interface{}, mode extr
 
 	return AppAction{
 		AppID:       appID,
-		AppName:     appName,
 		ActionName:  name,
 		Title:       title,
 		Description: description,

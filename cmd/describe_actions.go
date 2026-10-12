@@ -1,19 +1,21 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/dynatrace-oss/dtctl/pkg/output"
 	"github.com/dynatrace-oss/dtctl/pkg/resources/appengine"
-	"github.com/dynatrace-oss/dtctl/pkg/stability"
+	"github.com/dynatrace-oss/dtctl/pkg/util/unknownfields"
 )
 
-// describeActionCmd describes an app action
+// describeActionDevelopmentFeature is the opt-in key for `describe action`.
+const describeActionDevelopmentFeature = "describe-action"
+
 var describeActionCmd = newDescribeActionCmd()
 
 func newDescribeActionCmd() *cobra.Command {
@@ -23,8 +25,9 @@ func newDescribeActionCmd() *cobra.Command {
 		Short:   "Describe an App Engine action",
 		Long: `Show detailed information about an app action.
 
-Actions are declared in an app's manifest. Any key of that entry without a
-field of its own is listed under "Additional manifest keys".
+Actions are declared in an app's manifest. Every attribute the manifest
+declares for the action is shown, including nested ones such as
+docs.inputSchema.
 
 Examples:
   # Describe an action
@@ -50,20 +53,26 @@ Examples:
 				return err
 			}
 
-			// For table output, show detailed human-readable information
-			if outputFormat(cmdContext(cmd)) == "table" {
+			if useActionDescribeTextView(cmdContext(cmd)) {
 				return describeActionTable(currentStdout(cmdContext(cmd)), action)
 			}
 
-			// For other formats, use standard printer
 			enrichAgent(printer, "describe", "action")
 			return printer.Print(action)
 		},
 	}
-	// Declared stable: the invocation and output contract of this command is
-	// additive-only. Stable is never implied -- see AGENTS.md "Stability Tiers".
-	stability.MarkStable(c)
 	return c
+}
+
+// useActionDescribeTextView reports whether to render the human-readable text
+// view. Agent mode always takes the structured envelope path: it leaves
+// outputFormat at its "table" default, so a bare format check would emit human
+// text into an agent session.
+func useActionDescribeTextView(ctx context.Context) bool {
+	if agentMode(ctx) {
+		return false
+	}
+	return outputFormat(ctx) == "" || outputFormat(ctx) == "table"
 }
 
 // describeActionTable renders the vertical view. Stateful prints only when
@@ -74,7 +83,7 @@ func describeActionTable(w io.Writer, action *appengine.AppAction) error {
 
 	output.FprintDescribeKV(w, "Action:", kw, "%s", action.ActionName)
 	output.FprintDescribeKV(w, "Full Name:", kw, "%s", action.FullName)
-	output.FprintDescribeKV(w, "App:", kw, "%s (%s)", action.AppName, action.AppID)
+	output.FprintDescribeKV(w, "App:", kw, "%s", action.AppID)
 	if action.Title != "" {
 		output.FprintDescribeKV(w, "Title:", kw, "%s", action.Title)
 	}
@@ -85,18 +94,24 @@ func describeActionTable(w io.Writer, action *appengine.AppAction) error {
 		output.FprintDescribeKV(w, "Stateful:", kw, "yes")
 	}
 
-	// Whatever the manifest declared that has no field above, so a key dtctl
-	// does not model still reaches the user -- without repeating the fields
-	// already printed.
 	if len(action.Extra) > 0 {
-		rendered, err := yaml.Marshal(action.Extra)
+		node, err := unknownfields.YAML(struct{}{}, action.Extra)
 		if err != nil {
-			return fmt.Errorf("render action manifest: %w", err)
+			return fmt.Errorf("render action attributes: %w", err)
+		}
+		// The empty base mapping encodes in flow style ("{}"), and the
+		// appended attributes would inherit it; describe wants block style.
+		if mapping, ok := node.(*yaml.Node); ok {
+			mapping.Style = 0
 		}
 		fmt.Fprintln(w)
-		output.FprintDescribeSection(w, "Additional manifest keys:")
-		for _, line := range strings.Split(strings.TrimRight(string(rendered), "\n"), "\n") {
-			fmt.Fprintf(w, "  %s\n", line)
+		enc := yaml.NewEncoder(w)
+		enc.SetIndent(2)
+		if err := enc.Encode(node); err != nil {
+			return fmt.Errorf("render action attributes: %w", err)
+		}
+		if err := enc.Close(); err != nil {
+			return fmt.Errorf("render action attributes: %w", err)
 		}
 	}
 

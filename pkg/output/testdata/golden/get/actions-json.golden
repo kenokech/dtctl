@@ -1,7 +1,6 @@
 [
   {
     "appId": "example.app",
-    "appName": "Example App",
     "actionName": "send-thing",
     "title": "Send thing",
     "description": "Sends a thing",
@@ -10,7 +9,6 @@
   },
   {
     "appId": "example.app",
-    "appName": "Example App",
     "actionName": "list-things",
     "title": "List things",
     "description": "Lists the things",
@@ -18,7 +16,6 @@
   },
   {
     "appId": "example.connector",
-    "appName": "Example Connector",
     "actionName": "create-thing",
     "title": "Create thing",
     "description": "Creates a thing",

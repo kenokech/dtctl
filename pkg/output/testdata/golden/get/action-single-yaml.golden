@@ -1,13 +1,15 @@
-appid: example.connector
-appname: Example Connector
-actionname: create-thing
+appId: example.connector
+actionName: create-thing
 title: Create thing
 description: Creates a thing
-stateful: false
-fullname: example.connector/create-thing
-extra:
-  approval: true
-  expressionValidation:
-    owner:
-      pattern: ^[A-Za-z0-9-]+$
-  widget: /actions/create-thing
+fullName: example.connector/create-thing
+approval: true
+docs:
+  inputSchema:
+    required:
+      - owner
+    type: object
+expressionValidation:
+  owner:
+    pattern: ^[A-Za-z0-9-]+$
+widget: /actions/create-thing

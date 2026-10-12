@@ -148,7 +148,8 @@ func init() {
 	getCmd.AddCommand(getLookupsCmd)
 	getCmd.AddCommand(getAppsCmd)
 	getCmd.AddCommand(getFunctionsCmd)
-	getCmd.AddCommand(getActionsCmd)
+	// Development tier until the registry's /actions API is generally available.
+	addDevelopmentCommand(getCmd, getActionsCmd, getActionsDevelopmentFeature)
 	getCmd.AddCommand(getIntentsCmd)
 	getCmd.AddCommand(getEdgeConnectsCmd)
 	getCmd.AddCommand(getUsersCmd)
