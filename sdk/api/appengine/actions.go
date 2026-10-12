@@ -3,6 +3,7 @@ package appengine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -24,7 +25,7 @@ import (
 // Extra follows that same split -- see its comment.
 type AppAction struct {
 	AppID       string `json:"appId"`
-	AppName     string `json:"appName"`
+	AppName     string `json:"appName,omitempty"`
 	ActionName  string `json:"actionName"`
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
@@ -62,13 +63,17 @@ var modelledActionKeys = map[string]bool{
 type searchActionsResponse struct {
 	Apps []struct {
 		ID      string                   `json:"id"`
-		Name    string                   `json:"name"`
 		Actions []map[string]interface{} `json:"actions"`
 	} `json:"apps"`
 }
 
 // MaxActionQueryLength is the longest search string the endpoint accepts.
 const MaxActionQueryLength = 256
+
+// ErrActionFilterUnsupported is returned for any Filter: GET
+// /apps:search-actions only takes full-text search terms. Filtering arrives
+// with GET /actions.
+var ErrActionFilterUnsupported = errors.New("filter is not supported yet: it needs the App Registry's GET /actions endpoint")
 
 // ListActionsOptions narrows what ListActions returns.
 type ListActionsOptions struct {
@@ -79,6 +84,11 @@ type ListActionsOptions struct {
 	// appear in the app name, app description, action name, title or
 	// description; terms are case-insensitive and each one narrows further.
 	Query string
+
+	// Filter is a platform filter expression on app.id and the action's
+	// top-level fields, e.g. "not (action.inputSchema is-empty)". Any value
+	// is refused with ErrActionFilterUnsupported until List reads GET /actions.
+	Filter string
 }
 
 // ListActions lists the actions of installed apps.
@@ -87,6 +97,9 @@ type ListActionsOptions struct {
 // filter is the full-text Query -- an app id passed to it would also match
 // every action whose description merely mentions the app.
 func (h *Handler) ListActions(ctx context.Context, opts ListActionsOptions) ([]AppAction, error) {
+	if opts.Filter != "" {
+		return nil, ErrActionFilterUnsupported
+	}
 	if len(opts.Query) > MaxActionQueryLength {
 		return nil, fmt.Errorf("search is %d characters, the maximum is %d", len(opts.Query), MaxActionQueryLength)
 	}
@@ -116,9 +129,10 @@ func (h *Handler) ListActions(ctx context.Context, opts ListActionsOptions) ([]A
 			continue
 		}
 		for _, entry := range app.Actions {
-			// withoutExtra: a list never carries unmodelled keys, whatever
-			// this source returned. See AppAction.Extra.
-			if action, ok := newAppAction(app.ID, app.Name, entry, withoutExtra); ok {
+			// AppName stays empty although this source has it: /actions
+			// names the app by id only. withoutExtra: a list never carries
+			// unmodelled keys. See AppAction.Extra.
+			if action, ok := newAppAction(app.ID, "", entry, withoutExtra); ok {
 				actions = append(actions, action)
 			}
 		}

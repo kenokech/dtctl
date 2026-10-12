@@ -9,8 +9,10 @@ import (
 // AppAction represents an action declared by an app (CLI version with table
 // tags).
 type AppAction struct {
-	AppID       string `json:"appId" table:"APP_ID,wide"`
-	AppName     string `json:"appName" table:"APP"`
+	AppID string `json:"appId" table:"APP_ID"`
+	// AppName is hidden from tables: GET /actions names the app by id only,
+	// so a list never has it.
+	AppName     string `json:"appName,omitempty" table:"-"`
 	ActionName  string `json:"actionName" table:"ACTION"`
 	Title       string `json:"title,omitempty" table:"TITLE"`
 	Description string `json:"description,omitempty" table:"DESCRIPTION,wide"`

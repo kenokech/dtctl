@@ -212,7 +212,7 @@ deprecation cycle. Nothing stated here is relaxed by reaching 1.0.
 
 - commands: 271 stable, 17 experimental, 14 development
 - global flags (accepted on every command): 11
-- entries below (commands + flags): 942
+- entries below (commands + flags): 943
 
 ## Surface
 
@@ -739,6 +739,7 @@ get                                  stable
 get actions                          stable
   --app                              stable
   --filter                           stable
+  --name                             stable
 get analyzers                        stable
   --filter                           stable
 get anomaly-detectors                stable

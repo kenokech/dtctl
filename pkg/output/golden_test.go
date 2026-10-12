@@ -3494,12 +3494,12 @@ func TestGolden_GetServiceUsers_Empty(t *testing.T) {
 // actionFixtures is what `get actions` lists. Extra is deliberately absent
 // from every entry: the flat /actions collection serves a fixed field set, so
 // a list can never carry arbitrary keys. Only a single action has them --
-// see actionWithExtraFixture.
+// see actionWithExtraFixture. AppName is absent too: /actions names the app by
+// id only.
 func actionFixtures() []appengine.AppAction {
 	return []appengine.AppAction{
 		{
 			AppID:       "example.app",
-			AppName:     "Example App",
 			ActionName:  "send-thing",
 			Title:       "Send thing",
 			Description: "Sends a thing",
@@ -3508,7 +3508,6 @@ func actionFixtures() []appengine.AppAction {
 		},
 		{
 			AppID:       "example.app",
-			AppName:     "Example App",
 			ActionName:  "list-things",
 			Title:       "List things",
 			Description: "Lists the things",
@@ -3516,7 +3515,6 @@ func actionFixtures() []appengine.AppAction {
 		},
 		{
 			AppID:       "example.connector",
-			AppName:     "Example Connector",
 			ActionName:  "create-thing",
 			Title:       "Create thing",
 			Description: "Creates a thing",

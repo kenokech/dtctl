@@ -2,6 +2,7 @@ package appengine
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -212,6 +213,23 @@ func TestHandler_GetAction(t *testing.T) {
 	})
 }
 
+// newActionListServer serves body as GET /actions and records the last request.
+func newActionListServer(t *testing.T, body string, got **http.Request) *Handler {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got != nil {
+			*got = r
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	c, err := httpclient.New(srv.URL, httpclient.WithToken("dt0c01.test"), httpclient.WithRetry(0, time.Millisecond, time.Millisecond))
+	if err != nil {
+		t.Fatalf("httpclient.New: %v", err)
+	}
+	return NewHandler(c)
+}
+
 func TestHandler_ListActions(t *testing.T) {
 	// GET /apps:search-actions groups actions under their app. Every entry
 	// here carries an unmodelled key, because a list must drop them whatever
@@ -225,9 +243,8 @@ func TestHandler_ListActions(t *testing.T) {
 		]}
 	]}`
 
-	t.Run("flattens every app, sorted by full name", func(t *testing.T) {
-		h := newTestActionHandler(t, body)
-		actions, err := h.ListActions(context.Background(), ListActionsOptions{})
+	t.Run("flattens every app, sorted by full name, nameless entries skipped", func(t *testing.T) {
+		actions, err := newActionListServer(t, body, nil).ListActions(context.Background(), ListActionsOptions{})
 		if err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
@@ -241,9 +258,8 @@ func TestHandler_ListActions(t *testing.T) {
 		}
 	})
 
-	t.Run("modelled fields are mapped", func(t *testing.T) {
-		h := newTestActionHandler(t, body)
-		actions, err := h.ListActions(context.Background(), ListActionsOptions{AppID: "acme.app"})
+	t.Run("modelled fields are mapped, app name is not", func(t *testing.T) {
+		actions, err := newActionListServer(t, body, nil).ListActions(context.Background(), ListActionsOptions{AppID: "acme.app"})
 		if err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
@@ -251,17 +267,16 @@ func TestHandler_ListActions(t *testing.T) {
 			t.Fatalf("got %d actions, want 2: %+v", len(actions), actions)
 		}
 		a2 := actions[1]
-		if a2.ActionName != "a2" || a2.Title != "A2" || !a2.Stateful {
+		if a2.ActionName != "a2" || a2.Title != "A2" || !a2.Stateful || a2.AppID != "acme.app" {
 			t.Errorf("unexpected action: %+v", a2)
 		}
-		if a2.AppID != "acme.app" || a2.AppName != "Acme" {
-			t.Errorf("app fields not mapped: %+v", a2)
+		if a2.AppName != "" {
+			t.Errorf("AppName = %q; /actions will not serve it", a2.AppName)
 		}
 	})
 
 	t.Run("a list never carries Extra", func(t *testing.T) {
-		h := newTestActionHandler(t, body)
-		actions, err := h.ListActions(context.Background(), ListActionsOptions{})
+		actions, err := newActionListServer(t, body, nil).ListActions(context.Background(), ListActionsOptions{})
 		if err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
@@ -273,8 +288,7 @@ func TestHandler_ListActions(t *testing.T) {
 	})
 
 	t.Run("filtered by app id", func(t *testing.T) {
-		h := newTestActionHandler(t, body)
-		actions, err := h.ListActions(context.Background(), ListActionsOptions{AppID: "other.app"})
+		actions, err := newActionListServer(t, body, nil).ListActions(context.Background(), ListActionsOptions{AppID: "other.app"})
 		if err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
@@ -283,9 +297,8 @@ func TestHandler_ListActions(t *testing.T) {
 		}
 	})
 
-	t.Run("filter matching no app", func(t *testing.T) {
-		h := newTestActionHandler(t, body)
-		actions, err := h.ListActions(context.Background(), ListActionsOptions{AppID: "nope.app"})
+	t.Run("app id matching nothing", func(t *testing.T) {
+		actions, err := newActionListServer(t, body, nil).ListActions(context.Background(), ListActionsOptions{AppID: "nope.app"})
 		if err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
@@ -295,85 +308,58 @@ func TestHandler_ListActions(t *testing.T) {
 	})
 
 	t.Run("requests the search-actions endpoint", func(t *testing.T) {
-		var path string
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			path = r.URL.Path
-			_, _ = w.Write([]byte(`{"apps":[]}`))
-		}))
-		t.Cleanup(srv.Close)
-		c, err := httpclient.New(srv.URL, httpclient.WithToken("dt0c01.test"), httpclient.WithRetry(0, time.Millisecond, time.Millisecond))
-		if err != nil {
-			t.Fatalf("httpclient.New: %v", err)
-		}
-		if _, err := NewHandler(c).ListActions(context.Background(), ListActionsOptions{}); err != nil {
+		var r *http.Request
+		if _, err := newActionListServer(t, `{"apps":[]}`, &r).ListActions(context.Background(), ListActionsOptions{}); err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
-		if path != "/platform/app-engine/registry/v1/apps:search-actions" {
-			t.Errorf("requested %q", path)
+		if r.URL.Path != "/platform/app-engine/registry/v1/apps:search-actions" {
+			t.Errorf("requested %q", r.URL.Path)
 		}
 	})
 }
 
 func TestHandler_ListActions_Query(t *testing.T) {
 	t.Run("sent upstream as the query param", func(t *testing.T) {
-		var got string
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			got = r.URL.Query().Get("query")
-			_, _ = w.Write([]byte(`{"apps":[]}`))
-		}))
-		t.Cleanup(srv.Close)
-		c, err := httpclient.New(srv.URL, httpclient.WithToken("dt0c01.test"), httpclient.WithRetry(0, time.Millisecond, time.Millisecond))
-		if err != nil {
-			t.Fatalf("httpclient.New: %v", err)
-		}
-		if _, err := NewHandler(c).ListActions(context.Background(), ListActionsOptions{Query: "jira create"}); err != nil {
+		var r *http.Request
+		if _, err := newActionListServer(t, `{"apps":[]}`, &r).ListActions(context.Background(), ListActionsOptions{Query: "jira create"}); err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
-		if got != "jira create" {
+		if got := r.URL.Query().Get("query"); got != "jira create" {
 			t.Errorf("query = %q, want %q", got, "jira create")
 		}
 	})
 
 	t.Run("omitted when empty", func(t *testing.T) {
-		var present bool
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, present = r.URL.Query()["query"]
-			_, _ = w.Write([]byte(`{"apps":[]}`))
-		}))
-		t.Cleanup(srv.Close)
-		c, err := httpclient.New(srv.URL, httpclient.WithToken("dt0c01.test"), httpclient.WithRetry(0, time.Millisecond, time.Millisecond))
-		if err != nil {
-			t.Fatalf("httpclient.New: %v", err)
-		}
-		if _, err := NewHandler(c).ListActions(context.Background(), ListActionsOptions{}); err != nil {
+		var r *http.Request
+		if _, err := newActionListServer(t, `{"apps":[]}`, &r).ListActions(context.Background(), ListActionsOptions{}); err != nil {
 			t.Fatalf("ListActions: %v", err)
 		}
-		if present {
+		if _, present := r.URL.Query()["query"]; present {
 			t.Error("query param sent for an empty search")
 		}
 	})
 
 	t.Run("over the length limit is refused before any request", func(t *testing.T) {
-		var called bool
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			called = true
-			_, _ = w.Write([]byte(`{"apps":[]}`))
-		}))
-		t.Cleanup(srv.Close)
-		c, err := httpclient.New(srv.URL, httpclient.WithToken("dt0c01.test"), httpclient.WithRetry(0, time.Millisecond, time.Millisecond))
-		if err != nil {
-			t.Fatalf("httpclient.New: %v", err)
+		var r *http.Request
+		_, err := newActionListServer(t, `{"apps":[]}`, &r).ListActions(context.Background(), ListActionsOptions{Query: strings.Repeat("x", MaxActionQueryLength+1)})
+		if err == nil || !strings.Contains(err.Error(), "search is 257 characters, the maximum is 256") {
+			t.Fatalf("error = %v", err)
 		}
-		long := strings.Repeat("x", MaxActionQueryLength+1)
-		_, err = NewHandler(c).ListActions(context.Background(), ListActionsOptions{Query: long})
-		if err == nil {
-			t.Fatal("expected an error")
-		}
-		if !strings.Contains(err.Error(), "the maximum is 256") {
-			t.Errorf("error = %v", err)
-		}
-		if called {
+		if r != nil {
 			t.Error("request sent despite an over-long search")
+		}
+	})
+}
+
+func TestHandler_ListActions_Filter(t *testing.T) {
+	t.Run("refused before any request until GET /actions is available", func(t *testing.T) {
+		var r *http.Request
+		_, err := newActionListServer(t, `{"apps":[]}`, &r).ListActions(context.Background(), ListActionsOptions{Filter: "not (action.inputSchema is-empty)"})
+		if !errors.Is(err, ErrActionFilterUnsupported) {
+			t.Fatalf("error = %v, want ErrActionFilterUnsupported", err)
+		}
+		if r != nil {
+			t.Error("request sent despite an unsupported filter")
 		}
 	})
 }

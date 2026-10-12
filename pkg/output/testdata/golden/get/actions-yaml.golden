@@ -1,5 +1,5 @@
 - appid: example.app
-  appname: Example App
+  appname: ""
   actionname: send-thing
   title: Send thing
   description: Sends a thing
@@ -7,7 +7,7 @@
   fullname: example.app/send-thing
   extra: {}
 - appid: example.app
-  appname: Example App
+  appname: ""
   actionname: list-things
   title: List things
   description: Lists the things
@@ -15,7 +15,7 @@
   fullname: example.app/list-things
   extra: {}
 - appid: example.connector
-  appname: Example Connector
+  appname: ""
   actionname: create-thing
   title: Create thing
   description: Creates a thing
